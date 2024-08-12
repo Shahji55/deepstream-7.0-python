@@ -324,11 +324,65 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
             # Set nvbuf-memory-type=2 for x86 for file-loop (nvurisrcbin case)
             streammux.set_property('nvbuf-memory-type', 2)
 
-    if no_display:
+    if no_display and not save_output:
         print("Creating Fakesink \n")
         sink = Gst.ElementFactory.make("fakesink", "fakesink")
         sink.set_property('enable-last-sample', 0)
         sink.set_property('sync', 0)
+    elif save_output:
+        print("Creating FileSink \n")
+
+        # Create filesink
+        sink = Gst.ElementFactory.make("filesink", "nvvideo-renderer")
+
+        # Specify location/name of output video file
+        output_file = 'output.mp4'
+
+        # Set filesink properties
+        sink.set_property('location', output_file)
+        sink.set_property("sync",0) # Don't sync to clock, to allow samples to be played as fast as possible
+
+        print("Creating nvvidconv2 \n ")
+
+        # Create nvvideoconvert element
+        nvvidconv2 = Gst.ElementFactory.make("nvvideoconvert", "convertor2")
+        if not nvvidconv2:
+            sys.stderr.write(" Unable to create nvvidconv2 \n")
+
+        print("Creating nvv4l2h264enc \n ")
+
+        # Create nvv4l2h264enc element
+        encoder = Gst.ElementFactory.make("nvv4l2h264enc", "encoder")
+        if not encoder:
+            sys.stderr.write(" Unable to create encoder \n")
+
+        print("Creating qtmux \n ")
+
+        # Create qtmux element
+        mux = Gst.ElementFactory.make("qtmux", "muxer")
+        if not mux:
+            sys.stderr.write(" Unable to create muxer \n")
+
+        # Create h264parse element
+        print("Creating h264parse\n ")
+        parser1 = Gst.ElementFactory.make("h264parse", "h264-parser2")
+        if not parser1:
+            sys.stderr.write(" Unable to create parser1 \n")
+
+        pipeline.add(nvvidconv2)
+        pipeline.add(encoder)
+        pipeline.add(mux)
+        pipeline.add(parser1)
+
+        queue9=Gst.ElementFactory.make("queue","queue9")
+        queue10=Gst.ElementFactory.make("queue","queue10")
+        queue11=Gst.ElementFactory.make("queue","queue11")
+        queue12=Gst.ElementFactory.make("queue","queue12")
+
+        pipeline.add(queue9)
+        pipeline.add(queue10)
+        pipeline.add(queue11)
+        pipeline.add(queue12)
     else:
         if platform_info.is_integrated_gpu():
             print("Creating nv3dsink \n")
@@ -436,7 +490,19 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
     nvvidconv.link(queue7)
     queue7.link(nvosd)
     nvosd.link(queue8)
-    queue8.link(sink)   
+
+    if save_output:
+        queue8.link(nvvidconv2)
+        nvvidconv2.link(queue9)
+        queue9.link(encoder)
+        encoder.link(queue10)
+        queue10.link(parser1)
+        parser1.link(queue11)
+        queue11.link(mux)
+        mux.link(queue12)
+        queue12.link(sink)
+    else:
+        queue8.link(sink)    
 
     # create an event loop and feed gstreamer bus mesages to it
     loop = GLib.MainLoop()
@@ -506,6 +572,7 @@ def parse_args():
         choices=["nvinfer", "nvinferserver", "nvinferserver-grpc"],
     )
     parser.add_argument(
+        "-n",
         "--no-display",
         action="store_true",
         default=False,
@@ -534,6 +601,13 @@ def parse_args():
         dest='silent',
         help="Disable verbose output",
     )
+    parser.add_argument(
+        "--save_output",
+        action="store_true",
+        default=False,
+        dest='save_output',
+        help="Save output video with tracked objects",
+    )
     # Check input arguments
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
@@ -547,6 +621,8 @@ def parse_args():
     global no_display
     global silent
     global file_loop
+    global save_output
+    save_output = args.save_output
     no_display = args.no_display
     silent = args.silent
     file_loop = args.file_loop
