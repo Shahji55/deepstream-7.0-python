@@ -50,7 +50,7 @@ pgie_classes_str= ["Vehicle", "Bicycle", "Person", "RoadSign"]
 def pgie_src_pad_buffer_probe(pad,info,u_data):
     frame_number=0
     num_rects=0
-    got_fps = False
+    #got_fps = False
     gst_buffer = info.get_buffer()
     if not gst_buffer:
         print("Unable to get GstBuffer ")
@@ -94,6 +94,17 @@ def pgie_src_pad_buffer_probe(pad,info,u_data):
             try: 
                 # Casting l_obj.data to pyds.NvDsObjectMeta
                 obj_meta=pyds.NvDsObjectMeta.cast(l_obj.data)
+                
+                track_id = obj_meta.object_id
+                #print("Track id: ", track_id)
+
+                det_confidence = round(obj_meta.confidence, 2)
+                #print("Conf: ", det_confidence)
+
+                # Display detection confidence on bbox
+                obj_meta.text_params.display_text = "%s - %s: %s"%(track_id, pgie_classes_str[obj_meta.class_id], det_confidence)
+                obj_meta.text_params.font_params.font_size = 10
+
             except StopIteration:
                 break
             obj_counter[obj_meta.class_id] += 1
@@ -115,8 +126,6 @@ def pgie_src_pad_buffer_probe(pad,info,u_data):
             break
 
     return Gst.PadProbeReturn.OK
-
-
 
 def cb_newpad(decodebin, decoder_src_pad,data):
     print("In cb_newpad\n")
@@ -153,8 +162,6 @@ def decodebin_child_added(child_proxy,Object,name,user_data):
         source_element = child_proxy.get_by_name("source")
         if source_element.find_property('drop-on-latency') != None:
             Object.set_property("drop-on-latency", True)
-
-
 
 def create_source_bin(index,uri):
     print("Creating source bin")
@@ -247,12 +254,16 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
     queue4=Gst.ElementFactory.make("queue","queue4")
     queue5=Gst.ElementFactory.make("queue","queue5")
     queue6=Gst.ElementFactory.make("queue","queue6")
+    queue7=Gst.ElementFactory.make("queue","queue7")
+    queue8=Gst.ElementFactory.make("queue","queue8")
     pipeline.add(queue1)
     pipeline.add(queue2)
     pipeline.add(queue3)
     pipeline.add(queue4)
     pipeline.add(queue5)
     pipeline.add(queue6)
+    pipeline.add(queue7)
+    pipeline.add(queue8)
 
     nvdslogger = None
 
@@ -276,6 +287,19 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
     tracker = Gst.ElementFactory.make("nvtracker", "tracker")
     if not tracker:
         sys.stderr.write(" Unable to create tracker \n")
+
+    # Add nvvidconv1 and filter1 to convert the frames to RGBA
+    print("Creating nvvidconv1 \n")
+    nvvidconv1 = Gst.ElementFactory.make("nvvideoconvert", "convertor1")
+    if not nvvidconv1:
+        sys.stderr.write("Unable to create nvvidconv1 \n")
+        
+    print("Creating filter1 \n")
+    caps1 = Gst.Caps.from_string("video/x-raw(memory:NVMM), format=RGBA")
+    filter1 = Gst.ElementFactory.make("capsfilter", "filter1")
+    if not filter1:
+        sys.stderr.write("Unable to get the caps filter1 \n")
+    filter1.set_property("caps",caps1)
 
     print("Creating tiler \n ")
     tiler=Gst.ElementFactory.make("nvmultistreamtiler", "nvtiler")
@@ -385,6 +409,8 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
         pipeline.add(nvdslogger)
     pipeline.add(tiler)
     pipeline.add(nvvidconv)
+    pipeline.add(filter1)
+    pipeline.add(nvvidconv1)
     pipeline.add(nvosd)
     pipeline.add(sink)
 
@@ -395,17 +421,22 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
     queue2.link(tracker)
     tracker.link(queue3)
 
+    queue3.link(nvvidconv1)
+    nvvidconv1.link(queue4)
+    queue4.link(filter1)
+    filter1.link(queue5)
+
     if nvdslogger:
-        queue3.link(nvdslogger)
+        queue5.link(nvdslogger)
         nvdslogger.link(tiler)
     else:
-        queue3.link(tiler)
-    tiler.link(queue4)
-    queue4.link(nvvidconv)
-    nvvidconv.link(queue5)
-    queue5.link(nvosd)
-    nvosd.link(queue6)
-    queue6.link(sink)   
+        queue5.link(tiler)
+    tiler.link(queue6)
+    queue6.link(nvvidconv)
+    nvvidconv.link(queue7)
+    queue7.link(nvosd)
+    nvosd.link(queue8)
+    queue8.link(sink)   
 
     # create an event loop and feed gstreamer bus mesages to it
     loop = GLib.MainLoop()
@@ -413,7 +444,8 @@ def main(args, requested_pgie=None, config=None, disable_probe=False):
     bus.add_signal_watch()
     bus.connect ("message", bus_call, loop)
     #pgie_src_pad=pgie.get_static_pad("src")
-    pgie_src_pad=pgie.get_static_pad("sink")
+    #pgie_src_pad=pgie.get_static_pad("sink")
+    pgie_src_pad=filter1.get_static_pad("sink")
     if not pgie_src_pad:
         sys.stderr.write(" Unable to get src pad \n")
     else:
